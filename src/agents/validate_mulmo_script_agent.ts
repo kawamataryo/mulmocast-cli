@@ -2,15 +2,15 @@ import type { AgentFunction, AgentFunctionInfo, DefaultConfigData } from "grapha
 import { mulmoScriptSchema } from "../schema";
 import { MulmoScript } from "../type";
 
-interface ValidateMulmoScriptInputs {
+type ValidateMulmoScriptInputs = {
   text: string;
-}
+};
 
-interface ValidateMulmoScriptResponse {
+type ValidateMulmoScriptResponse = {
   isValid: boolean;
   data?: MulmoScript;
   error?: string;
-}
+};
 
 /**
  * MulmoScript JSON validation agent
