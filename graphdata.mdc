@@ -1,0 +1,537 @@
+---
+description: GraphAI のデータ構造を書く際のベストプラクティス
+globs: 
+alwaysApply: false
+---
+# GraphAI データソースガイド
+
+GraphAI では、ノードは他のノードからデータを受け取り、処理を実行します。このデータの受け渡しや参照の方法、つまり「データソース」の指定方法についてまとめます。
+
+## GraphData 全体オプション (トップレベル設定)
+
+GraphData オブジェクトのルートに指定可能な主なオプションを解説します。
+
+- `version`: GraphData のバージョン（例: `0.5`）。互換性チェックに利用されます。
+- `concurrency`: 同時並列実行可能なノード数を指定します（例: `5`）。
+- `retry`: グラフ全体の再試行回数を指定します（例: `2`）。
+- `verbose`: `true` にするとデバッグログを詳細表示します。
+- `metadata`: グラフ実行時に参照可能な任意の付加情報（オブジェクト）。
+- `config`: エージェント固有の設定をまとめたマップ（例: API キーなど）。
+- `loop`: 既述のループ設定オプション（`count` / `while`）を指定します。
+- `nodes`: 各ノード定義を持つオブジェクト。必須です。
+
+```typescript
+const graphData: GraphData = {
+  version: 0.5,
+  concurrency: 3,
+  retry: 1,
+  verbose: false,
+  metadata: { project: "example" },
+  config: { openAIAgent: { apiKey: "YOUR_KEY" } },
+  loop: { while: ":items" },
+  nodes: {
+    // ノード定義...
+  }
+};
+```
+
+## データソースの仕組み
+
+GraphAIのグラフはノードのネットワークであり、各ノードは他のノードからデータを受け取り、処理（エージェントによる計算）を実行し、結果を他のノードに渡します。データソースの指定は、このデータの流れを定義する方法です。
+
+- **静的ノード:** `value` プロパティで定義された固定値を保持します。他のノードから参照されるデータ源となります。
+- **計算ノード:** `agent` を持ち、`inputs` で指定されたデータソースを受け取って処理を実行します。処理結果は、他のノードから参照可能な出力となります。
+- **依存関係:** `inputs` で他のノードを参照することで、ノード間の実行順序が決まります。参照先のノードの処理が完了するまで、参照元のノードの実行は待機されます。
+- **参照:** データソースの参照は、コロン `:` から始まる文字列で行います (例: `:nodeId`, `:nodeId.propertyName`)。
+
+## データソースの種類と指定方法
+
+### 1. 静的な値 (`value`)
+
+ノードに直接固定値を定義します。最も基本的なデータソースです。
+
+```typescript
+const graphData = {
+  nodes: {
+    promptText: {
+      value: "AIについて100語で説明してください。",
+    },
+    parameters: {
+      value: {
+        temperature: 0.7,
+        maxTokens: 150,
+      },
+    },
+  },
+};
+```
+
+### 2. 他のノードからの入力 (`inputs`)
+
+他のノードの出力を動的に参照します。GraphAIの中核となるデータ連携方法です。
+
+**`inputs` の指定形式** (@参考: Zennジェクト形式 (推奨):** エージェントが期待する入力名（キー）に対して、データソース（値）を指定します。可読性が高く、エージェントが必要とする入力を明示的に渡せます。
+
+  ```typescript
+  const graphData = {
+    nodes: {
+      sourceNode: {
+        // ... 出力例: { result: "データ", details: { type: "A" } }
+      },
+      targetNode: {
+        agent: "someAgent",
+        inputs: {
+          mainData: ":sourceNode", // sourceNodeの主要出力 (多くは result) を参照
+          dataType: ":sourceNode.details.type", // sourceNodeのネストしたプロパティを参照
+        },
+      },
+    },
+  };
+  ```
+ 
+ `inputs` はオブジェクト形式で定義し、キーにエージェントが期待する入力名、値にデータソース（コロンから始まる文字列参照）またはリテラル値を指定します。
+
+**参照の詳細**
+
+- **基本参照 (`:nodeId`):** 指定されたノードの主要な出力（エージェント定義によるが、多くは `result`）を参照します。
+- **プロパティ参照 (`:nodeId.propName`):** ノード出力オブジェクトの特定のプロパティを参照します。`.` で繋げてネストしたプロパティも参照可能です (例: `:nodeA.data.value`)。
+- **配列インデックス参照 (`:nodeId.$index`):** ノード出力が配列の場合、`$index` (0始まり) で要素を参照します (例: `:myArrayNode.$0`)。
+- **配列末尾参照 (`:nodeId.$last`):** ノード出力が配列の場合、最後の要素を参照します (例: `:myArrayNode.$last`)。
+
+### 3. プロパティ関数 (特殊な参照)
+
+ノード自身の状態やグラフ全体の情報を参照するための特殊な構文です。`$` または `$$` で始まります。(@参考: Zenn - GraphAIのちょっと特殊なInputsの指定：プロパティ関数)
+
+| 関数名                | 説明                                                                                                                                                             | スコープ    | 主な用途                                                                                    |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------- | ------------------------------------------------------------------------------------------- |
+| `$value`              | ノードの現在の `value` を参照します。静的ノードでのみ有効です。                                                                                                                                              | ノード      | `update` プロパティでの自己参照、`computedAgent` などでの現在値の取得                       |
+| `$source`             | ノードの `inputs` が単一参照の場合に、その解決結果を参照します。                                                                                                                                             | ノード      | エージェント内で解決済みの単一入力を扱う                                                    |
+| `$sources`            | ノードの `inputs` がオブジェクト形式または配列形式の場合に、全ての解決済み入力データをまとめて参照します。オブジェクト形式の場合は入力名がキー、配列形式の場合はインデックスがキーになります。               | ノード      | エージェント内で解決済みの複数入力をまとめて扱う                                            |
+| `$$dataSources`       | グラフ全体のデータソースオブジェクト（全ノードの現在の出力状態）を参照します。                                                                                                                               | グラフ全体  | デバッグ、高度なデータフロー制御                                                            |
+| `$$debugInfo`         | グラフのデバッグ情報を参照します。                                                                                                                                                                           | グラフ全体  | デバッグ                                                                                    |
+| `$$agentParams`       | ノードの `params` で定義されたエージェントパラメータを参照します。                                                                                                                                           | ノード      | エージェント内で自身のパラメータを利用する                                                  |
+| `$$aggregatedResults` | ループ処理 (`loop`) などで集約された結果を参照します。                                                                                                                                                       | ループ内    | ループの各反復処理の結果を利用する                                                          |
+| `$$LOOP`              | ループ処理 (`loop`) のコンテキスト情報 (`$index`, `$count`, `$limit`) を参照します。                                                                                                                         | ループ内    | ループの現在の反復回数などを利用する                                                        |
+| `$nodeId`             | (`update` や `computedAgent` などで) プロパティ関数内で他のノードIDを指定してそのノードの現在の値 (`value` または出力結果) を参照します。 例: `:counter.$value` は `counter` ノードの現在の `value` を参照。 | ノード/参照 | `update` で他のノードの値を使って更新する、`computedAgent` で他のノードの状態を基に計算する |
+
+**`$value` の使用例 (カウンター):**
+
+```typescript
+const graphData = {
+  nodes: {
+    counter: {
+      value: 0,
+      // incrementノードの出力 (result) で counter の value を更新
+      update: ":increment.result",
+    },
+    increment: {
+      agent: "computedAgent", // 入力値に1を加えるエージェント
+      inputs: {
+        // counter ノードの現在の value を current という名前で入力
+        current: ":counter.$value",
+      },
+    },
+  },
+};
+```
+
+### 3.5 Prop Function (データ操作)
+
+データソース参照 (`:nodeId.propName`) の末尾にドット (`.`) と関数名を付けることで、取得したデータに対して簡単な操作を行うことができます。これはエージェントを実行する前に行われます。(@参考: Zenn - GraphAIのProp function)
+
+**利用可能な Prop Function:**
+
+*   **Array (配列) 用:**
+    *   `length()`: 配列の要素数を返します。 (例: `:myArray.length()`)
+    *   `flat()`: ネストした配列をフラット化します。 (例: `:nestedArray.flat()`)
+    *   `toJSON()`: 配列をJSON文字列に変換します。 (例: `:myArray.toJSON()`)
+    *   `isEmpty()`: 配列が空なら `true` を返します。 (例: `:myArray.isEmpty()`)
+    *   `join()`: 要素を空文字で連結します。 (例: `:stringArray.join()`)
+    *   `join(separator)`: 指定した区切り文字で要素を連結します。 (例: `:stringArray.join(',')`, `:stringArray.join('-')`)
+*   **Object (オブジェクト) 用:**
+    *   `keys()`: オブジェクトのキーを配列で返します。 (例: `:myObject.keys()`)
+    *   `values()`: オブジェクトの値を配列で返します。 (例: `:myObject.values()`)
+    *   `toJSON()`: オブジェクトをJSON文字列に変換します。 (例: `:myObject.toJSON()`)
+*   **String (文字列) 用:**
+    *   `codeBlock()`: Markdownコードブロック (```...```) 内の文字列を抽出します。 (例: `:markdownText.codeBlock()`)
+    *   `jsonParse()`: JSON文字列を解析してオブジェクト/配列に変換します。 (例: `:jsonString.jsonParse()`)
+    *   `toNumber()`: 文字列を数値に変換します。 (例: `:numericString.toNumber()`)
+    *   `split(separator)`: 指定した区切り文字で文字列を分割し、配列で返します。 (例: `:csvString.split(',')`, `:hyphenatedString.split('-')`)
+    *   `trim()`: 前後の空白を削除します。 (例: `:text.trim()`)
+    *   `toLowerCase()`: 文字列を小文字に変換します。 (例: `:text.toLowerCase()`)
+    *   `toUpperCase()`: 文字列を大文字に変換します。 (例: `:text.toUpperCase()`)
+    *   `slice(start,end)`: 文字列の一部を切り出します。 (例: `:text.slice(0,5)`)
+*   **Number (数値) 用:**
+    *   `toString()`: 数値を文字列に変換します。 (例: `:myNumber.toString()`)
+    *   `add(integer)`: 指定した整数を加算します。 (例: `:myNumber.add(1)`)
+*   **Boolean (論理値) 用:**
+    *   `not()`: 論理値を反転します (`true` -> `false`, `false` -> `true`)。 (例: `:myBoolean.not()`)
+
+**例 (配列の長さを取得):**
+
+```typescript
+const graphData = {
+  nodes: {
+    myList: {
+      value: ["apple", "banana", "cherry"],
+    },
+    listInfo: {
+      agent: "stringTemplateAgent",
+      inputs: {
+        // myListノードの配列の長さを取得して利用
+        text: "The list has ${:myList.length()} items.",
+      },
+      console: { after: true },
+    },
+  },
+};
+// 出力例: The list has 3 items.
+```
+
+### 4. ネストされたグラフでの入出力
+
+`nestedAgent` や `mapAgent` を使用すると、グラフ内に別のグラフ（子グラフ）を埋め込むことができます。親子グラフ間でのデータ受け渡しには特別な仕組みがあります。(@参考: Zenn - GraphAI の nested graph での input/output の渡し方, @GraphAI Tutorial - Function Call)
+
+#### 4.1. 親グラフから子グラフへのデータ受け渡し
+
+*   **`nestedAgent`:**
+    *   `inputs` で指定されたキーと値は、**サブグラフ内の静的ノードとしてマッピング**されます。例えば、親で `inputs: { dataA: 1 }` と指定すると、サブグラフ実行時には `dataA: { value: 1 }` という静的ノードが存在し、サブグラフ内から `:dataA` で参照できます。
+    *   **`params` の主なオプション**:
+        * `resultNodeId`: サブグラフの特定のノード結果のみを返します。指定しない場合、サブグラフ内のすべての `isResult: true` ノードの結果をまとめたオブジェクトが返されます。
+        * `throwError`: `true` にすると、サブグラフ実行中にエラーが発生した際に例外をスローします。デフォルトは `false` で、エラーは `{ onError: { message, error } }` オブジェクトとして返されます。
+
+    **例 (inputs のマッピング):**
+    ```typescript
+    const graphData = {
+      nodes: {
+        nested: {
+          agent: "nestedAgent",
+          inputs: {
+            dataA: 1, // サブグラフの dataA 静的ノードにマッピング
+            dataB: 2, // サブグラフの dataB 静的ノードにマッピング
+          },
+          graph: {
+            nodes: {
+              copy: {
+                agent: "copyAgent",
+                inputs: {
+                  a: ":dataA", // マッピングされた静的ノードを参照
+                  b: ":dataB",
+                },
+                isResult: true,
+              },
+            },
+          },
+          isResult: true,
+        },
+      },
+    };
+    // 出力: { nested: { copy: { a: 1, b: 2 } } }
+    ```
+
+*   **`mapAgent`:**
+    *   `inputs` 内の **`rows`** プロパティは特別扱いされます。`rows` に指定された配列の各要素に対して、サブグラフが個別に生成および実行されます。各サブグラフ内では、対応する要素が `:row` で参照でき、`params.rowKey` でキーを変更できます（デフォルトは `row`）。
+    *   `rows` **以外の** `inputs` プロパティは、すべてのサブグラフにコピーされ、各サブグラフで同じキー（例: `:commonValue`）として参照できます。
+    *   **`params` の主なオプション**:
+        * `limit`: `rows` 配列の要素から処理するサブグラフの最大数を指定します。
+        * `compositeResult`: `true` にすると、出力がノードIDをキーとするオブジェクト形式になります。デフォルトは配列形式です。
+        * `resultAll`: `true` にすると、各サブグラフが複数の `isResult: true` ノードを持つ場合、そのすべての結果を返します（デフォルトは `false`）。
+        * `throwError`: `true` にすると、サブグラフ実行中にエラーが発生した際に例外をスローします。デフォルトは `false`。
+        * `rowKey`: サブグラフ内で要素を参照するノードIDを指定します（デフォルトは `row`）。
+
+    **例 (rows と他の inputs の違い):**
+    ```typescript
+    const graphData = {
+      nodes: {
+        map: {
+          agent: "mapAgent",
+          inputs: {
+            rows: [1, 2],           // これが展開され、サブグラフが2つ作られる
+            commonArray: ["a", "b"], // 各サブグラフにそのままコピーされる
+            commonValue: "z",       // 各サブグラフにそのままコピーされる
+          },
+          graph: {
+            nodes: {
+              copy: {
+                agent: "copyAgent",
+                inputs: {
+                  currentRow: ":row",         // 各サブグラフで 1 または 2 になる
+                  copiedArray: ":commonArray", // 各サブグラフで ["a", "b"]
+                  copiedValue: ":commonValue", // 各サブグラフで "z"
+                },
+                isResult: true,
+              },
+            },
+          },
+          isResult: true,
+        },
+      },
+    };
+    // 出力:
+    // {
+    //   map: [
+    //     { copy: { currentRow: 1, copiedArray: ["a", "b"], copiedValue: "z" } },
+    //     { copy: { currentRow: 2, copiedArray: ["a", "b"], copiedValue: "z" } }
+    //   ]
+    // }
+    ```
+
+#### 4.2. 子グラフから親グラフへの結果の渡し方
+
+子グラフ内で `isResult: true` が指定されたノードの出力が、親グラフにおける `nestedAgent` または `mapAgent` ノードの出力結果となります。
+
+*   **`nestedAgent`:** `isResult: true` のノードの出力がそのまま `nestedAgent` ノードの出力になります。
+*   **`mapAgent` (デフォルト):** 各要素に対応するサブグラフの実行結果 (`isResult: true` のノードの出力) が配列としてまとめられ、`mapAgent` ノードの出力になります (上記 `mapAgent` の例の出力参照)。
+*   **`mapAgent` (`compositeResult: true`):** `mapAgent` の `params` に `compositeResult: true` を指定すると、出力形式が変わります。結果はサブグラフのノードIDをキーとし、各キーの値が対応するノードの全サブグラフからの結果をまとめた配列になります。
+
+    **例 (`compositeResult: true`):**
+    ```typescript
+    const graphData = {
+      nodes: {
+        map: {
+          agent: "mapAgent",
+          params: {
+            compositeResult: true, // 出力形式を変更
+          },
+          inputs: {
+            rows: [1, 2],
+          },
+          graph: {
+            nodes: {
+              node1: { // サブグラフのノードID
+                agent: "computedAgent", // :row * 2 を計算すると仮定
+                inputs: { value: ":row" },
+                isResult: true,
+              },
+              node2: { // サブグラフのノードID
+                agent: "stringTemplateAgent",
+                inputs: { text: "Item ${:row}" },
+                isResult: true,
+              },
+            },
+          },
+          isResult: true,
+        },
+      },
+    };
+    // 出力:
+    // {
+    //   map: {
+    //     // キーがサブグラフのノードIDになる
+    //     node1: [ 2, 4 ], // 各サブグラフの node1 の結果配列
+    //     node2: [ "Item 1", "Item 2" ] // 各サブグラフの node2 の結果配列
+    //   }
+    // }
+    ```
+
+#### 4.3. 出力構造のカスタマイズ (`output`)
+
+`nestedAgent` および `mapAgent` では、`output` プロパティを指定することで、エージェント自体の出力構造をカスタマイズできます。これにより、サブグラフの特定のノードやプロパティだけを選択したり、名前を変更したりできます。指定方法は Graph Output Definition (GOD) format に基づき、ドット (`.`) でサブグラフのノードIDやプロパティを繋げて指定します。
+
+**例 (`nestedAgent` で `output` を使用):**
+```typescript
+const graphData = {
+  nodes: {
+    nested: {
+      agent: "nestedAgent",
+      inputs: {
+        value1: "hello",
+        value2: "world",
+      },
+      // outputプロパティで出力構造を定義
+      output: {
+        data1: ".copy1.result", // copy1 ノードの result プロパティを data1 として出力
+        data2: ".copy2.result", // copy2 ノードの result プロパティを data2 として出力
+      },
+      graph: {
+        nodes: {
+          copy1: { // isResult: true は不要になる場合がある
+            agent: "copyAgent",
+            inputs: { result: ":value1" },
+          },
+          copy2: {
+            agent: "copyAgent",
+            inputs: { result: ":value2" },
+          },
+        },
+      },
+      isResult: true,
+    },
+  },
+};
+// 出力: { nested: { data1: "hello", data2: "world" } }
+```
+*注意: `output` を指定すると、サブグラフ内の `isResult: true` の指定は無視されることがあります。*
+
+### 5. 条件付き入力 (`if`/`unless`)
+
+特定の条件が満たされた場合（または満たされなかった場合）にのみ、ノードを実行したり、入力を有効にしたりできます。データソースの参照結果（通常は真偽値）に基づいて条件分岐を行います。
+
+```typescript
+const graphData = {
+  nodes: {
+    shouldProceed: {
+      value: true, // または他のノードからの動的な真偽値
+    },
+    conditionalNode: {
+      agent: "someAgent",
+      // shouldProceed ノードの結果が true の場合のみ実行
+      if: ":shouldProceed",
+      // inputs: ...
+    },
+    anotherNode: {
+      agent: "anotherAgent",
+      inputs: {
+        optionalData: ":sourceNode",
+      },
+      // sourceNode の結果が存在しない (null や undefined) 場合のみ実行
+      unless: ":sourceNode",
+    },
+  },
+};
+```
+
+### 6. 制御フロー: ループ (`loop`)
+
+グラフ全体を指定した条件に基づいて繰り返し実行するための機能です。グラフ定義のトップレベルに `loop` プロパティを追加します。`loop` プロパティには、以下のオプションプロパティがあります。
+
+*   `count`: グラフを実行する最大回数を指定します。
+*   `while`: 各反復処理の後にチェックするデータソースを指定します。このデータソースの値が `true` と評価される限り、ループは継続します。JavaScriptとは異なり、空の配列 `[]` は `false` として扱われます。
+
+ループ内で状態を管理するために、静的ノードの `update` プロパティがよく使用されます。これにより、各反復の出力に基づいてノードの `value` を更新できます。
+
+**例: リスト内の各人物についてLLMクエリを実行し、結果のリストを作成する**
+
+以下の例では、`people` ノード (静的) に人物名の配列を初期値として設定します。`retriever` ノード (計算) が一度に1つの名前を取得し、`query` ノード (計算) に渡してLLMクエリを実行します。`reducer` ノードが、`result` ノード (静的、初期値は空配列) から取得した配列にクエリ結果を追加します。
+
+`people` と `result` という2つの静的ノードの `update` プロパティは、前の反復の結果に基づいてこれらのノードの値を更新します。このループは `people` ノードの値が空の配列になるまで続きます。
+
+
+```typescript
+const graph_data = {
+  version: 0.5,
+  loop: {
+    while: ":people",
+  },
+  nodes: {
+    people: {
+      value: ["Steve Jobs", "Elon Musk", "Nikola Tesla"],
+      update: ":retriever.array",
+    },
+    result: {
+      value: [],
+      update: ":reducer.array",
+      isResult: true,
+    },
+    retriever: {
+      agent: "shiftAgent",
+      inputs: {
+        array: ":people",
+      },
+    },
+    query: {
+      agent: "openAIAgent",
+      params: {
+        system: "Describe about the person in less than 100 words",
+        model: "gpt-4o",
+      },
+      inputs: {
+        prompt: ":retriever.item",
+      },
+    },
+    reducer: {
+      agent: "pushAgent",
+      inputs: {
+        array: ":result",
+        item: ":query.text",
+      },
+    },
+  },
+};
+```
+
+*   @Zenn - GraphAIのちょっと特殊なInputsの指定：プロパティ関数
+*   @Zenn - GraphAI の nested graph での input/output の渡し方
+
+### 7. ノードレベルの細かなオプション
+
+各ノード（静的ノード / 計算ノード）には、以下の追加オプションを指定できます。これらにより、エラー制御や実行順序、フォールバック処理などを細かく設定できます。
+
+- `retry`: ノード単位の再試行回数（数値）。  
+- `timeout`: ミリ秒単位のタイムアウト時間（数値）。  
+- `defaultValue`: 入力が解決できなかった場合に返すフォールバック値。  
+- `anyInput`: `true` にすると、複数入力のいずれか1つが揃えばノードを実行します。  
+- `priority`: ノードの実行優先度（数値）。大きいほど先に実行されます。  
+- `passThrough`: エージェント実行結果に追加で含めたい任意のデータ（オブジェクト）。  
+- `filterParams`: `agentFilters` 用のパラメータ設定（オブジェクト）。  
+
+## 一般的なデータ形式 (テンプレート)
+
+多くのエージェントは、特定のキーを持つオブジェクト形式のデータを入力として期待したり、出力として返したりします。これらは「データテンプレート」と考えることができます。(@参考: GraphAI Guide - Inputs)
+
+| テンプレート例                        | 説明                                     | 主な関連エージェント                                                                                                 |
+| ------------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `{ result: any }`                     | 最も一般的な出力形式。処理結果。         |penAIAgent`, `computedAgent` など)                                                |
+| `{ array: [], item: any, items: [] }` | 配列とその要素を扱う形式。               | `shiftAgent`, `pushAgent`, `mapAgent` (内部)、`dotProductAgent`, `sortByValuesAgent`, `stringEmbeddingsAgent` (入力) |
+| `{ text: string }`                    | 文字列データを扱う形式。                 | `stringTemplateAgent`, `stringSplitterAgent`, `openAIAgent` (出力)、`jsonParserAgent` (入力)                         |
+| `{ data: object }`                    | 汎用的なオブジェクトデータを扱う形式。   | `copyAgent`, `jsonParserAgent` (出力)                                                                                |
+| `{ buffer: Buffer }`                  | バイナリデータを扱う形式。               | ファイル処理関連エージェントなど                                                                                     |
+| `{ query: string }`                   | 検索クエリなどを扱う形式。               | `wikipediaAgent`                                                                                                     |
+| `{ messages: [], message: {} }`       | チャット履歴や単一メッセージを扱う形式。 | `openAIAgent`                                                                                                        |
+
+エージェントのドキュメントを確認し、期待される入力形式と出力形式を理解することが重要です。
+
+## 外部データソースとの連携
+
+GraphAIは、グラフ実行時に外部からデータを取得するためのエージェントも提供しています。
+
+- **`textInputAgent`**: ユーザーからのコンソール入力を受け付け、そのテキストを出力します。
+- **`fetchAgent`**: 指定されたURLにHTTPリクエストを送信し、レスポンス（JSON、テキストなど）を出力します。API連携に不可欠です。
+- **`wikipediaAgent`**: 指定されたクエリでWikipediaの記事を取得し、その内容を出力します。
+
+**例 (ユーザー入力に基づいてAPIを叩く):**
+
+```typescript
+const graphData = {
+  nodes: {
+    userInput: {
+      agent: "textInputAgent",
+      params: {
+        message: "検索したい都市名を入力してください:",
+      },
+    },
+    fetchWeather: {
+      agent: "fetchAgent",
+      inputs: {
+        // userInput.text を使って動的にURLを構築
+        // Note: YAML string interpolation ${...} needs to be represented as a string in TS.
+        // The actual execution environment would handle this.
+        url: "https://api.weatherapi.com/v1/current.json?key=YOUR_API_KEY&q=${:userInput.text}",
+      },
+      params: {
+        // JSONで受け取ることを期待
+        type: "json",
+      },
+    },
+    displayWeather: {
+      agent: "stringTemplateAgent", // または他の表示用エージェント
+      inputs: {
+        // fetchWeatherの結果から気温を表示
+        // Note: Similar handling for string interpolation
+        text: "現在の気温 (${:userInput.text}): ${:fetchWeather.current.temp_c}°C",
+      },
+      console: {
+        after: true, // コンソールに表示
+      },
+    },
+  },
+};
+```
+
+## ベストプラクティス
+
+- **ノード名を分かりやすくする:** データフローを理解しやすくするために、ノードの役割が分かる名前を付けます。
+- **プロパティ参照を適切に使う:** 不要にデータ全体を渡さず、必要なプロパティのみを参照することで、データの流れを明確にします。
+- **複雑な処理は分割する:** 一つのノードで多くのことをせず、複数のノードに処理を分割し、それぞれを単純に保ちます。
+- **`console` を活用する:** デバッグ時には `console: { before: true, after: true }` をノードに追加して、入出力データを確認します。
+  
