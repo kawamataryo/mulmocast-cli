@@ -22,6 +22,7 @@ export const validateSchemaAgent: AgentFunction<object, ValidateMulmoScriptRespo
   namedInputs,
 }) => {
   const { text, schema } = namedInputs;
+  console.log("text", text);
   assert(schema, "schema is required");
   assert(text, "text is required");
 
@@ -33,6 +34,7 @@ export const validateSchemaAgent: AgentFunction<object, ValidateMulmoScriptRespo
       data: parsed,
     };
   } catch (error) {
+    console.log("error", error);
     return {
       isValid: false,
       error: error instanceof Error ? error.message : String(error),

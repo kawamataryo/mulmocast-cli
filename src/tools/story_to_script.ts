@@ -1,12 +1,13 @@
 import path from "path";
 import { getBaseDirPath, getTemplateFilePath, writingMessage } from "../utils/file.js";
-import { mulmoScriptTemplateSchema, mulmoStoryboardSchema } from "../types/schema.js";
+import { mulmoScriptSchema, mulmoScriptTemplateSchema, mulmoStoryboardSchema } from "../types/schema.js";
 import { MulmoScriptTemplate, MulmoStoryboard } from "../types/index.js";
-import { GraphAI, GraphData } from "graphai";
+import { GraphAI, GraphAILogger, GraphData } from "graphai";
 import { openAIAgent } from "@graphai/openai_agent";
 import * as agents from "@graphai/vanilla";
 import { graphDataScriptGeneratePrompt, sceneToBeatsPrompt, storyToScriptInfoPrompt } from "../utils/prompt.js";
 import { fileWriteAgent } from "@graphai/vanilla_node_agents";
+import validateSchemaAgent from "../agents/validate_schema_agent.js";
 
 const { default: __, ...vanillaAgents } = agents;
 
@@ -39,32 +40,64 @@ const graphData: GraphData = {
       },
       graph: {
         nodes: {
-          // TODO: Validate result
-          llm: {
-            agent: "openAIAgent",
+          beats: {
+            agent: "nestedAgent",
             inputs: {
-              model: "gpt-4o",
-              system: ":prompt",
-              prompt: graphDataScriptGeneratePrompt("${:row}"),
-            },
-          },
-          json: {
-            agent: "copyAgent",
-            inputs: {
-              json: ":llm.text.codeBlock().jsonParse()",
-            },
-            params: {
-              namedKey: "json",
+              prompt: ":prompt",
+              row: ":row",
             },
             isResult: true,
+            graph: {
+              loop: {
+                while: ":continue",
+              },
+              nodes: {
+                counter: {
+                  value: 0,
+                  update: ":counter.add(1)",
+                },
+                llm: {
+                  agent: "openAIAgent",
+                  inputs: {
+                    model: "gpt-4o",
+                    system: ":prompt",
+                    prompt: graphDataScriptGeneratePrompt("${:row}"),
+                  },
+                },
+                validateSchema: {
+                  agent: "validateSchemaAgent",
+                  inputs: {
+                    text: ":llm.text.codeBlock()",
+                    schema: mulmoScriptSchema.shape.beats,
+                  },
+                  isResult: true,
+                },
+                continue: {
+                  agent: ({ isValid, counter }: { isValid: boolean; counter: number }) => {
+                    if (counter >= 3) {
+                      GraphAILogger.error("Failed to generate a valid script. Please try again.");
+                      process.exit(1);
+                    }
+                    return !isValid;
+                  },
+                  inputs: {
+                    counter: ":counter",
+                    isValid: ":validateSchema.isValid",
+                  },
+                },
+              },
+            },
           },
         },
+      },
+      console: {
+        after: true,
       },
     },
     beats: {
       agent: "arrayFlatAgent",
       inputs: {
-        array: ":script.json",
+        array: ":script.beats.validateSchema.data",
       },
       isResult: true,
     },
@@ -74,8 +107,14 @@ const graphData: GraphData = {
         prompt: ":scriptInfoPrompt",
       },
       graph: {
-        // TODO: Validate result
+        loop: {
+          while: ":continue",
+        },
         nodes: {
+          counter: {
+            value: 0,
+            update: ":counter.add(1)",
+          },
           llm: {
             agent: "openAIAgent",
             inputs: {
@@ -83,23 +122,37 @@ const graphData: GraphData = {
               prompt: ":prompt",
             },
           },
-          json: {
-            agent: "copyAgent",
+          validateSchema: {
+            agent: "validateSchemaAgent",
             inputs: {
-              json: ":llm.text.codeBlock().jsonParse()",
-            },
-            params: {
-              namedKey: "json",
+              text: ":llm.text.codeBlock()",
+              schema: mulmoScriptSchema.omit({ beats: true }),
             },
             isResult: true,
           },
+          continue: {
+            agent: ({ isValid, counter }: { isValid: boolean; counter: number }) => {
+              if (counter >= 3) {
+                GraphAILogger.error("Failed to generate a valid script. Please try again.");
+                process.exit(1);
+              }
+              return !isValid;
+            },
+            inputs: {
+              counter: ":counter",
+              isValid: ":validateSchema.isValid",
+            },
+          },
         },
+      },
+      console: {
+        after: true,
       },
     },
     mergedScript: {
       agent: "mergeObjectAgent",
       inputs: {
-        items: [":scriptInfo.json", { beats: ":beats.array" }],
+        items: [":scriptInfo.validateSchema.data", { beats: ":beats.array" }],
       },
     },
     writeJSON: {
@@ -136,7 +189,7 @@ const storyToScript = async ({ story, beatsPerScene, templateName }: { story: Mu
   const beatsPrompt = await generateBeatsPrompt(template, beatsPerScene, story);
   const scriptInfoPrompt = await generateScriptInfoPrompt(template, story);
 
-  const graph = new GraphAI(graphData, { ...vanillaAgents, openAIAgent, fileWriteAgent });
+  const graph = new GraphAI(graphData, { ...vanillaAgents, openAIAgent, fileWriteAgent, validateSchemaAgent });
 
   graph.injectValue("beatsPrompt", beatsPrompt);
   graph.injectValue("scriptInfoPrompt", scriptInfoPrompt);
