@@ -8,8 +8,60 @@ import * as agents from "@graphai/vanilla";
 import { graphDataScriptGeneratePrompt, sceneToBeatsPrompt, storyToScriptInfoPrompt } from "../utils/prompt.js";
 import { fileWriteAgent } from "@graphai/vanilla_node_agents";
 import validateSchemaAgent from "../agents/validate_schema_agent.js";
+import { ZodSchema } from "zod";
 
 const { default: __, ...vanillaAgents } = agents;
+
+const generateScriptWithValidationGraphData = ({
+  systemPrompt,
+  prompt,
+  schema,
+}: {
+  systemPrompt: string;
+  prompt: string;
+  schema: ZodSchema;
+}) => {
+  return {
+    loop: {
+      while: ":continue",
+    },
+    nodes: {
+      counter: {
+        value: 0,
+        update: ":counter.add(1)",
+      },
+      llm: {
+        agent: "openAIAgent",
+        inputs: {
+          model: "gpt-4o",
+          system: systemPrompt,
+          prompt: prompt,
+        },
+      },
+      validateSchema: {
+        agent: "validateSchemaAgent",
+        inputs: {
+          text: ":llm.text.codeBlock()",
+          schema: schema,
+        },
+        isResult: true,
+      },
+      continue: {
+        agent: ({ isValid, counter }: { isValid: boolean; counter: number }) => {
+          if (counter >= 3) {
+            GraphAILogger.error("Failed to generate a valid script. Please try again.");
+            process.exit(1);
+          }
+          return !isValid;
+        },
+        inputs: {
+          counter: ":counter",
+          isValid: ":validateSchema.isValid",
+        },
+      },
+    },
+  }
+};
 
 const graphData: GraphData = {
   version: 0.5,
@@ -40,64 +92,35 @@ const graphData: GraphData = {
       },
       graph: {
         nodes: {
-          beats: {
+          generateScript: {
             agent: "nestedAgent",
             inputs: {
               prompt: ":prompt",
               row: ":row",
             },
             isResult: true,
-            graph: {
-              loop: {
-                while: ":continue",
-              },
-              nodes: {
-                counter: {
-                  value: 0,
-                  update: ":counter.add(1)",
-                },
-                llm: {
-                  agent: "openAIAgent",
-                  inputs: {
-                    model: "gpt-4o",
-                    system: ":prompt",
-                    prompt: graphDataScriptGeneratePrompt("${:row}"),
-                  },
-                },
-                validateSchema: {
-                  agent: "validateSchemaAgent",
-                  inputs: {
-                    text: ":llm.text.codeBlock()",
-                    schema: mulmoScriptSchema.shape.beats,
-                  },
-                  isResult: true,
-                },
-                continue: {
-                  agent: ({ isValid, counter }: { isValid: boolean; counter: number }) => {
-                    if (counter >= 3) {
-                      GraphAILogger.error("Failed to generate a valid script. Please try again.");
-                      process.exit(1);
-                    }
-                    return !isValid;
-                  },
-                  inputs: {
-                    counter: ":counter",
-                    isValid: ":validateSchema.isValid",
-                  },
-                },
-              },
-            },
+            graph: generateScriptWithValidationGraphData({
+              systemPrompt: ":prompt",
+              prompt: graphDataScriptGeneratePrompt("${:row}"),
+              schema: mulmoScriptSchema.shape.beats,
+            }),
           },
         },
+      },
+      output: {
+        data: ":generateScript.validateSchema.data",
       },
       console: {
         after: true,
       },
     },
     beats: {
+      console: {
+        before: true,
+      },
       agent: "arrayFlatAgent",
       inputs: {
-        array: ":script.beats.validateSchema.data",
+        array: ":script.data.beats",
       },
       isResult: true,
     },
@@ -144,9 +167,6 @@ const graphData: GraphData = {
             },
           },
         },
-      },
-      console: {
-        after: true,
       },
     },
     mergedScript: {

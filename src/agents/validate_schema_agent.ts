@@ -22,7 +22,6 @@ export const validateSchemaAgent: AgentFunction<object, ValidateMulmoScriptRespo
   namedInputs,
 }) => {
   const { text, schema } = namedInputs;
-  console.log("text", text);
   assert(schema, "schema is required");
   assert(text, "text is required");
 
