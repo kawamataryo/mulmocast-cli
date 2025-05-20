@@ -37,7 +37,7 @@
     "cli": "npx tsx ./src/cli/run.ts",
     "scripting": "npx tsx ./src/cli/tool-cli.ts scripting",
     "prompt": "npx tsx ./src/cli/tool-cli.ts prompt",
-    "story_to_script": "npx tsx ./src/tools/story_to_script.ts",
+    "story_to_script": "npx tsx ./src/cli/tool-cli.ts story-to-script",
     "latest": "yarn upgrade-interactive  --latest",
     "format": "prettier --write '{src,scripts,assets/templates,draft,ideason,scripts_mag2,proto,test,graphai,output,docs/scripts}/**/*.{ts,json,yaml}'"
   },

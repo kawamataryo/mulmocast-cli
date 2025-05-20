@@ -13,12 +13,14 @@ import { getUrlsIfNeeded, selectTemplate } from "../utils/inquirer.js";
 
 import { mulmoScriptSchema } from "../types/schema.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
+import { storyToScript } from "../tools/story_to_script.js";
 
 const main = async () => {
   const { o: outdir, b: basedir, action, v: verbose, i: interactive, s: filename, cache } = args;
   let { t: template } = args;
   const { u: urls } = args;
   const { llm_model, llm_agent } = args;
+  const { storyFile, beats_per_scene } = args;
 
   const baseDirPath = getBaseDirPath(basedir as string);
   const outDirPath = getFullPath(baseDirPath, (outdir as string) ?? outDirName);
@@ -33,10 +35,16 @@ const main = async () => {
     GraphAILogger.info("action:", action);
     GraphAILogger.info("interactive:", interactive);
     GraphAILogger.info("filename:", filename);
+    GraphAILogger.info("storyFile:", storyFile);
+    GraphAILogger.info("beatsPerScene:", beats_per_scene);
   } else {
     GraphAILogger.setLevelEnabled("error", false);
     GraphAILogger.setLevelEnabled("log", false);
     GraphAILogger.setLevelEnabled("warn", false);
+  }
+
+  if (action === "story-to-script" && !storyFile) {
+    throw new Error("story file path is required for story-to-script action");
   }
 
   // If template is not specified, show the selection prompt
@@ -62,6 +70,15 @@ const main = async () => {
       strictUnions: true,
     });
     GraphAILogger.info(JSON.stringify(defaultSchema, null, 2));
+  } else if (action === "story-to-script") {
+    const storyPath = getFullPath(baseDirPath, storyFile as string);
+    await storyToScript({
+      storyPath,
+      beatsPerScene: beats_per_scene as number,
+      templateName: template,
+      outDirPath,
+      filename,
+    });
   } else {
     throw new Error(`Unknown or unsupported action: ${action}`);
   }

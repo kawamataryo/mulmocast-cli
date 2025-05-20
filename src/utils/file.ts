@@ -8,6 +8,7 @@ import { MulmoScriptTemplateMethods } from "../methods/mulmo_script_template.js"
 import { MulmoStudioContextMethods } from "../methods/index.js";
 import { mulmoScriptTemplateSchema } from "../types/schema.js";
 import { PDFMode } from "../types/index.js";
+import { ZodSchema } from "zod";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -177,4 +178,9 @@ export const resolveMediaSource = (source: MulmoMediaSource, context: MulmoStudi
     return source.url;
   }
   return null;
+};
+
+export const readAndParseJson = (filePath: string, zodSchema: ZodSchema) => {
+  const json = fs.readFileSync(filePath, "utf-8");
+  return zodSchema.parse(JSON.parse(json));
 };

@@ -53,12 +53,23 @@ export const args = commonOptions(yargs(hideBin(process.argv)))
     demandOption: false,
     type: "string",
   })
-  .command("$0 <action>", "Run mulmocast tool", (yargs) => {
-    return yargs.positional("action", {
-      describe: "action to perform",
-      choices: ["scripting", "prompt", "schema"] as const,
-      type: "string",
-    });
+  .command("$0 <action> [storyFile]", "Run mulmocast tool", (yargs) => {
+    return yargs
+      .positional("action", {
+        describe: "action to perform",
+        choices: ["scripting", "prompt", "schema", "story-to-script"] as const,
+        type: "string",
+      })
+      .positional("storyFile", {
+        describe: "story file path (required for story-to-script action)",
+        type: "string",
+      })
+      .option("beats_per_scene", {
+        description: "Number of beats per scene (for story-to-script action)",
+        demandOption: false,
+        default: 3,
+        type: "number",
+      });
   })
   .strict()
   .help()
